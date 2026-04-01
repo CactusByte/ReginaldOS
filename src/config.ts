@@ -30,6 +30,14 @@ export const config = {
   // Cron — persisted job store
   cronFile: optional("CRON_FILE", "./data/cron/jobs.json"),
 
+  // OpenAI image generation
+  openaiApiKey: optional("OPENAI_API_KEY", ""),
+  imageModel: optional("IMAGE_MODEL", "gpt-image-1"),
+
+  // Solana / Pump.fun
+  solanaRpcUrl: optional("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
+  solanaPrivateKey: optional("SOLANA_PRIVATE_KEY", ""),
+
   // iMessage (macOS only — requires Full Disk Access)
   iMessageChatDb: optional(
     "IMESSAGE_CHAT_DB",

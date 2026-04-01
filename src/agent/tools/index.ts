@@ -9,6 +9,9 @@ import { webFetch } from "./webFetch.js"
 import { createMemoryTool } from "./memorySearch.js"
 import { browserUse } from "./browser.js"
 import { tavilySearch, tavilyExtract } from "./tavily.js"
+import { pumpfun } from "./pumpfun.js"
+import { rugcheck } from "./rugcheck.js"
+import { imageGenerate } from "./imageGenerate.js"
 
 // Extra dispatchers registered at startup (cron, skill_read, etc.)
 type ExtraDispatcher = (
@@ -133,6 +136,97 @@ export const CORE_TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "image_generate",
+    description:
+      "Generate an image using OpenAI. Returns the image as base64, a data URL, a local file path, and ready-to-use canvas HTML. Use the canvasHtml field with canvas_update to display it. The file path can be used for pump.fun token creation metadata.",
+    input_schema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "Detailed description of the image to generate",
+        },
+        size: {
+          type: "string",
+          enum: ["1024x1024", "1536x1024", "1024x1536", "auto"],
+          description: "Image dimensions. Default: 1024x1024",
+        },
+        filename: {
+          type: "string",
+          description: "Optional base filename without extension (e.g. 'my-token'). Defaults to a UUID.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "rugcheck",
+    description:
+      "Check if a Solana token is a rug pull using RugCheck.xyz. Returns risk score, danger flags, warnings, LP lock %, and top holder concentration. Use this before any buy recommendation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        mint: {
+          type: "string",
+          description: "Token mint address to analyse",
+        },
+        full: {
+          type: "boolean",
+          description: "Return the full raw report instead of the summary (default: false)",
+        },
+      },
+      required: ["mint"],
+    },
+  },
+  {
+    name: "pumpfun",
+    description:
+      "Interact with Pump.fun on Solana. Buy tokens, sell tokens, create new tokens, or get price quotes from bonding curves. Requires SOLANA_RPC_URL and SOLANA_PRIVATE_KEY in environment. For buy/sell/create, always confirm with the user before executing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["buy", "sell", "create", "quote", "price"],
+          description: "Operation to perform",
+        },
+        mint: {
+          type: "string",
+          description: "Token mint address (required for buy, sell, quote)",
+        },
+        sol_amount: {
+          type: "number",
+          description: "SOL amount to spend (buy) or quote. In SOL, not lamports.",
+        },
+        token_amount: {
+          type: "number",
+          description: "Token amount to sell or quote (raw u64 units)",
+        },
+        slippage: {
+          type: "number",
+          description: "Slippage tolerance as decimal (0.05 = 5%). Default: 0.05",
+        },
+        name: {
+          type: "string",
+          description: "Token name (create only)",
+        },
+        symbol: {
+          type: "string",
+          description: "Token symbol/ticker (create only)",
+        },
+        uri: {
+          type: "string",
+          description: "Metadata URI — Arweave or IPFS URL to a JSON metadata file with image (create only)",
+        },
+        buy_sol: {
+          type: "number",
+          description: "Optional initial buy in SOL at token creation (create only)",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "project_info",
     description:
       "Returns the Astro project directory paths for this session. Call this before writing any website files to know exactly where to put them.",
@@ -235,7 +329,7 @@ export interface DispatchResult {
   isError: boolean
 }
 
-export function createDispatcher(memory: MemoryStore, sessionId: string) {
+export function createDispatcher(memory: MemoryStore, sessionId: string, onImage?: (path: string) => void) {
   const memoryTool = createMemoryTool(memory, sessionId)
 
   return async function dispatch(
@@ -270,6 +364,21 @@ export function createDispatcher(memory: MemoryStore, sessionId: string) {
         }
         case "tavily_extract": {
           const result = await tavilyExtract(input as Parameters<typeof tavilyExtract>[0])
+          return { content: result, isError: result.startsWith("Error:") }
+        }
+        case "image_generate": {
+          const result = await imageGenerate(
+            input as Parameters<typeof imageGenerate>[0],
+            onImage
+          )
+          return { content: result, isError: result.startsWith("Error:") }
+        }
+        case "rugcheck": {
+          const result = await rugcheck(input as Parameters<typeof rugcheck>[0])
+          return { content: result, isError: result.startsWith("Error:") }
+        }
+        case "pumpfun": {
+          const result = await pumpfun(input as Parameters<typeof pumpfun>[0])
           return { content: result, isError: result.startsWith("Error:") }
         }
         case "project_info": {

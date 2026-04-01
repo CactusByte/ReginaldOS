@@ -26,6 +26,8 @@ export interface LoopCallbacks {
   onCompaction?: () => void
   onDone?: () => void
   onError?: (err: Error) => void
+  /** Called when a tool generates an image file on disk. Path is absolute. */
+  onImage?: (path: string) => void
 }
 
 function sleep(ms: number): Promise<void> {
@@ -103,7 +105,7 @@ export async function runAgentLoop(
   memory: MemoryStore,
   callbacks: LoopCallbacks
 ): Promise<void> {
-  const dispatch = createDispatcher(memory, session.id)
+  const dispatch = createDispatcher(memory, session.id, callbacks.onImage)
 
   // ── Instant compaction: if the context is full, swap in the pre-built summary ──
   if ((session.tokenCount ?? 0) >= HARD_TOKEN_LIMIT) {

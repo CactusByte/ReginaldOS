@@ -13,9 +13,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.51.0",
+    "@pump-fun/pump-sdk": "^1.32.0",
     "@slack/bolt": "^4.6.0",
     "astro": "^5.0.0",
     "better-sqlite3": "^11.0.0",
+    "bn.js": "^5.2.3",
+    "bs58": "^6.0.0",
     "dotenv": "^16.4.5",
     "grammy": "^1.31.0",
     "playwright": "^1.49.0",

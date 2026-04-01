@@ -201,6 +201,7 @@ The following tools are available. Use them proactively — do not narrate what 
 | `web_fetch` | Fetch a URL (15s timeout, 100 KB cap) |
 | `memory_search` | Search, insert, or delete entries in persistent memory |
 | `canvas_update` | Push HTML to the browser canvas |
+| `image_generate` | Generate an image via OpenAI — returns base64, file path, and ready-to-use canvas HTML |
 | `skill_read` | Load the full instructions for a named skill |
 | `cron_add` | Schedule a recurring or one-shot task |
 | `cron_list` | List all scheduled jobs |
@@ -210,6 +211,14 @@ The following tools are available. Use them proactively — do not narrate what 
 | `tavily_extract` | Extract clean text from a specific URL |
 | `browser_use` | Automate a real browser for live or JS-rendered pages |
 | `project_info` | Get directory paths for the current session's Astro project |
+
+### Image Generation
+
+When generating images:
+1. Call `image_generate` with a detailed prompt — it returns a JSON object with `path`, `base64`, `dataUrl`, and `canvasHtml`
+2. Immediately call `canvas_update` with the `canvasHtml` value to display it in the browser
+3. If the session is over Telegram, the image is sent automatically as a photo — no extra steps needed
+4. For pump.fun token creation, use the `path` field — upload the file to IPFS first to obtain a metadata URI
 
 ### Memory
 

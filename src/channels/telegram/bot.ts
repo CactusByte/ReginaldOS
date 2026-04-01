@@ -1,4 +1,5 @@
-import { Bot } from "grammy"
+import { Bot, InputFile } from "grammy"
+import { createReadStream } from "node:fs"
 import { runAgentLoop } from "../../agent/loop.js"
 import type { SessionManager } from "../../sessions/manager.js"
 import type { MemoryStore } from "../../memory/store.js"
@@ -37,6 +38,13 @@ export function startTelegramBot(sessions: SessionManager, memory: MemoryStore):
         onDone: () => sessions.save(session),
         onError: async (err) => {
           await ctx.reply(`Error: ${err.message}`)
+        },
+        onImage: async (path) => {
+          try {
+            await bot.api.sendPhoto(chatId, new InputFile(createReadStream(path)))
+          } catch (err) {
+            console.error("[Telegram] Failed to send photo:", err)
+          }
         },
       })
 

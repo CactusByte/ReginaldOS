@@ -4,4 +4,5 @@ data/
 skills/
 .env
 *.db
+.claude/
 

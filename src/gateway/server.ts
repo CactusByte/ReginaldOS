@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, type IncomingMessage } from "node:http"
-import { readFileSync, existsSync } from "node:fs"
-import { join } from "node:path"
+import { readFileSync, existsSync, createReadStream, statSync } from "node:fs"
+import { join, extname } from "node:path"
+import { config } from "../config.js"
 import { exec, spawn } from "node:child_process"
 import { WebSocketServer, WebSocket } from "ws"
 import { runAgentLoop } from "../agent/loop.js"
@@ -49,6 +50,21 @@ export function createGateway(
           tar.on("error", () => res.end())
         }
       )
+    } else if (req.url?.startsWith("/images/")) {
+      const filename = decodeURIComponent(req.url.slice("/images/".length))
+      // Prevent path traversal
+      if (filename.includes("..") || filename.includes("/")) {
+        res.writeHead(400); res.end("Bad request"); return
+      }
+      const filePath = join(config.dataDir, "images", filename)
+      if (!existsSync(filePath)) {
+        res.writeHead(404); res.end("Not found"); return
+      }
+      const ext = extname(filename).toLowerCase()
+      const mime = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "application/octet-stream"
+      const stat = statSync(filePath)
+      res.writeHead(200, { "Content-Type": mime, "Content-Length": stat.size, "Cache-Control": "public, max-age=86400" })
+      createReadStream(filePath).pipe(res)
     } else {
       res.writeHead(404); res.end("Not found")
     }
@@ -111,6 +127,11 @@ export function createGateway(
           sendWs(ws, { type: "turn_end" })
         },
         onError: (err) => sendWs(ws, { type: "error", message: err.message }),
+        onImage: (path) => {
+          const filename = path.split("/").pop()!
+          const html = `<img src="/images/${encodeURIComponent(filename)}" style="max-width:100%;border-radius:8px;" />`
+          sendWs(ws, { type: "canvas_update", html })
+        },
       })
     } finally {
       running.delete(sessionId)
