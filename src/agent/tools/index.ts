@@ -138,7 +138,7 @@ export const CORE_TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: "image_generate",
     description:
-      "Generate an image using OpenAI. Returns the image as base64, a data URL, a local file path, and ready-to-use canvas HTML. Use the canvasHtml field with canvas_update to display it. The file path can be used for pump.fun token creation metadata.",
+      "Generate an image using OpenAI. Returns the image as base64, a data URL, a local file path, and ready-to-use canvas HTML. Use the canvasHtml field with canvas_update to display it.",
     input_schema: {
       type: "object",
       properties: {
