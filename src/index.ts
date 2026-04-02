@@ -13,6 +13,8 @@ import { registerExtraTools } from "./agent/tools/index.js"
 import { createCronDispatcher } from "./agent/tools/cron.js"
 import { createSkillReadDispatcher } from "./agent/tools/skillRead.js"
 import { initLoop } from "./agent/loop.js"
+import { connectMcpServers } from "./mcp/client.js"
+import type { McpServerConfig } from "./mcp/client.js"
 import { join } from "node:path"
 
 async function main(): Promise<void> {
@@ -116,6 +118,11 @@ async function main(): Promise<void> {
     ],
     createCronDispatcher(cronStore, cronRunner)
   )
+
+  // ── MCP servers ───────────────────────────────────────────────────────────
+  if (config.mcpServers.length > 0) {
+    await connectMcpServers(config.mcpServers as McpServerConfig[])
+  }
 
   // ── Freeze system prompt + tool list (must happen after registerExtraTools) ─
   initLoop(skills.hasSkills() ? skills.toXml() : undefined)

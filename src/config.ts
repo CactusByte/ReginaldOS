@@ -38,6 +38,11 @@ export const config = {
   solanaRpcUrl: optional("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
   solanaPrivateKey: optional("SOLANA_PRIVATE_KEY", ""),
 
+  // MCP servers — JSON array of server configs, e.g.:
+  // [{"type":"stdio","name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}]
+  // [{"type":"sse","name":"my-server","url":"http://localhost:3001/sse"}]
+  mcpServers: JSON.parse(optional("MCP_SERVERS", "[]")),
+
   // iMessage (macOS only — requires Full Disk Access)
   iMessageChatDb: optional(
     "IMESSAGE_CHAT_DB",

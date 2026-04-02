@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import type { Session } from "./types.js"
 
@@ -29,6 +29,29 @@ export class SessionManager {
       updatedAt: new Date().toISOString(),
       messages: [],
     }
+  }
+
+  get(id: string): Session | null {
+    const p = this.path(id)
+    if (!existsSync(p)) return null
+    try { return JSON.parse(readFileSync(p, "utf-8")) as Session } catch { return null }
+  }
+
+  list(): Array<{ id: string; title: string; updatedAt: string }> {
+    const files = readdirSync(this.dir).filter(f => f.endsWith(".json"))
+    const items: Array<{ id: string; title: string; updatedAt: string }> = []
+    for (const f of files) {
+      try {
+        const s = JSON.parse(readFileSync(join(this.dir, f), "utf-8")) as Session
+        const firstUser = s.messages.find(m => m.role === "user")
+        items.push({
+          id: s.id,
+          title: firstUser ? firstUser.content.slice(0, 60) : "New conversation",
+          updatedAt: s.updatedAt,
+        })
+      } catch { /* skip corrupt files */ }
+    }
+    return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
   save(session: Session): void {

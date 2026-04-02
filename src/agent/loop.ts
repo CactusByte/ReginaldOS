@@ -14,7 +14,7 @@ import {
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey })
 
-const MAX_TURNS = 20
+const MAX_TURNS = 50
 const MAX_RETRIES = 2
 const RETRY_DELAY_MS = 2000
 

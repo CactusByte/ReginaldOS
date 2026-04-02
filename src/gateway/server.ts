@@ -65,6 +65,16 @@ export function createGateway(
       const stat = statSync(filePath)
       res.writeHead(200, { "Content-Type": mime, "Content-Length": stat.size, "Cache-Control": "public, max-age=86400" })
       createReadStream(filePath).pipe(res)
+    } else if (req.url === "/api/sessions") {
+      const list = sessions.list()
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(JSON.stringify(list))
+    } else if (req.url?.startsWith("/api/sessions/")) {
+      const id = decodeURIComponent(req.url.slice("/api/sessions/".length))
+      const session = sessions.get(id)
+      if (!session) { res.writeHead(404); res.end("null"); return }
+      res.writeHead(200, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ messages: session.messages }))
     } else {
       res.writeHead(404); res.end("Not found")
     }
