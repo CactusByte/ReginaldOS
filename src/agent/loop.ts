@@ -1,7 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk"
+import { streamText, stepCountIs } from "ai"
+import type { ModelMessage } from "ai"
 import { config } from "../config.js"
 import { getSystemPrompt } from "./systemPrompt.js"
-import { getAllToolDefinitions, createDispatcher } from "./tools/index.js"
+import { buildAiSdkTools } from "./tools/index.js"
+import { getModel, isAnthropicModel } from "./provider.js"
 import type { MemoryStore } from "../memory/store.js"
 import type { Session } from "../sessions/types.js"
 import {
@@ -12,11 +15,10 @@ import {
   triggerBackgroundSummary,
 } from "./compaction.js"
 
-const anthropic = new Anthropic({ apiKey: config.anthropicApiKey })
+// Anthropic client kept solely for background compaction on Anthropic models (optional)
+const anthropic = config.anthropicApiKey ? new Anthropic({ apiKey: config.anthropicApiKey }) : null
 
-const MAX_TURNS = 50
-const MAX_RETRIES = 2
-const RETRY_DELAY_MS = 2000
+const MAX_STEPS = 50
 
 export interface LoopCallbacks {
   onToken: (delta: string) => void
@@ -30,73 +32,46 @@ export interface LoopCallbacks {
   onImage?: (path: string) => void
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function isOverloadedError(err: unknown): boolean {
-  if (err instanceof Anthropic.APIError) return err.status === 529
-  if (err instanceof Error) {
-    try {
-      const parsed = JSON.parse(err.message)
-      return parsed?.error?.type === "overloaded_error"
-    } catch { /* not JSON */ }
-  }
-  return false
-}
-
-function extractErrorMessage(err: unknown): string {
-  if (!(err instanceof Error)) return String(err)
-  try {
-    const parsed = JSON.parse(err.message)
-    if (parsed?.error?.message) return parsed.error.message
-  } catch { /* not JSON */ }
-  return err.message
-}
-
-/**
- * Mark the last message's last content block with cache_control so the growing
- * conversation history is incrementally cached on each turn.
- */
-function markLastForCache(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
-  if (messages.length === 0) return messages
-  const last = messages[messages.length - 1]
-  const cc: Anthropic.CacheControlEphemeral = { type: "ephemeral" }
-
-  let newContent: Anthropic.MessageParam["content"]
-  if (typeof last.content === "string") {
-    newContent = [{ type: "text", text: last.content, cache_control: cc }]
-  } else {
-    const blocks = last.content as unknown as Array<Record<string, unknown>>
-    newContent = [
-      ...blocks.slice(0, -1),
-      { ...blocks[blocks.length - 1], cache_control: cc },
-    ] as unknown as Anthropic.MessageParam["content"]
-  }
-  return [...messages.slice(0, -1), { ...last, content: newContent }]
-}
-
-// System prompt + tools are built once via initLoop() before any requests are served.
-// They stay byte-identical across requests to maximise prompt cache hits.
+let SYSTEM_PROMPT = getSystemPrompt()
+// Kept for Anthropic-only background compaction
 let SYSTEM_BLOCKS: Anthropic.TextBlockParam[] = [
-  { type: "text", text: getSystemPrompt(), cache_control: { type: "ephemeral" } },
+  { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
 ]
-let TOOLS_WITH_CACHE: Anthropic.Tool[] = []
+
+/** Call once at startup after registering extra tools and loading skills. */
+export function initLoop(skillsXml?: string): void {
+  SYSTEM_PROMPT = getSystemPrompt(skillsXml)
+  SYSTEM_BLOCKS = [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }]
+}
 
 /**
- * Call once at startup (after registering extra tools and loading skills) to
- * freeze the system prompt and tool list for the lifetime of the process.
+ * Load session history as ModelMessage[], falling back to plain text messages
+ * when the stored rawHistory is in the old Anthropic tool-block format.
  */
-export function initLoop(skillsXml?: string): void {
-  SYSTEM_BLOCKS = [
-    { type: "text", text: getSystemPrompt(skillsXml), cache_control: { type: "ephemeral" } },
-  ]
-  const defs = getAllToolDefinitions()
-  TOOLS_WITH_CACHE = defs.map((tool, i) =>
-    i === defs.length - 1
-      ? { ...tool, cache_control: { type: "ephemeral" } }
-      : tool
-  )
+function toModelMessages(session: Session): ModelMessage[] {
+  if (!session.rawHistory || session.rawHistory.length === 0) {
+    return session.messages.map(m => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }))
+  }
+
+  // Detect old Anthropic tool format (tool_use / tool_result content blocks)
+  const hasLegacyToolBlocks = (session.rawHistory as unknown[]).some(msg => {
+    const m = msg as { content?: unknown }
+    return Array.isArray(m.content) &&
+      (m.content as Array<{ type?: string }>).some(b => b.type === "tool_use" || b.type === "tool_result")
+  })
+
+  if (hasLegacyToolBlocks) {
+    // Can't reuse old Anthropic tool history in AI SDK format — rebuild from text
+    return session.messages.map(m => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }))
+  }
+
+  return session.rawHistory as ModelMessage[]
 }
 
 export async function runAgentLoop(
@@ -105,145 +80,95 @@ export async function runAgentLoop(
   memory: MemoryStore,
   callbacks: LoopCallbacks
 ): Promise<void> {
-  const dispatch = createDispatcher(memory, session.id, callbacks.onImage)
-
-  // ── Instant compaction: if the context is full, swap in the pre-built summary ──
-  if ((session.tokenCount ?? 0) >= HARD_TOKEN_LIMIT) {
-    applyCompaction(session)
-    callbacks.onCompaction?.()
+  // ── Compaction / truncation ───────────────────────────────────────────────
+  if (isAnthropicModel(config.model)) {
+    if (anthropic && (session.tokenCount ?? 0) >= HARD_TOKEN_LIMIT) {
+      applyCompaction(session)
+      callbacks.onCompaction?.()
+    }
+  } else {
+    // Non-Anthropic models: sliding window to stay within context limits.
+    // Always truncate to a clean boundary (start of a user turn) so we never
+    // send an orphaned tool-result message without its preceding tool_calls.
+    const MAX_NON_ANTHROPIC_HISTORY = 30
+    if (session.rawHistory && session.rawHistory.length > MAX_NON_ANTHROPIC_HISTORY) {
+      const sliced = session.rawHistory.slice(-MAX_NON_ANTHROPIC_HISTORY)
+      // Walk forward until we find a user message to avoid starting mid-tool-call
+      const firstUserIdx = sliced.findIndex((m) => (m as { role: string }).role === "user")
+      session.rawHistory = firstUserIdx > 0 ? sliced.slice(firstUserIdx) : sliced
+    } else if (!session.rawHistory && session.messages.length > MAX_NON_ANTHROPIC_HISTORY) {
+      session.messages = session.messages.slice(-MAX_NON_ANTHROPIC_HISTORY)
+    }
   }
 
-  let initialMessages: Anthropic.MessageParam[] = session.rawHistory
-    ? (session.rawHistory as Anthropic.MessageParam[])
-    : session.messages.map((m) => ({ role: m.role, content: m.content }))
-
-  // Guard: if history starts with a tool_result user message (can happen after a
-  // crash or bad truncation), drop leading messages until we reach clean text.
-  while (initialMessages.length > 0) {
-    const first = initialMessages[0]
-    const content = first.content
-    const startsWithToolResult =
-      Array.isArray(content) &&
-      (content as Array<{ type?: string }>)[0]?.type === "tool_result"
-    if (!startsWithToolResult) break
-    initialMessages = initialMessages.slice(1)
-  }
-
-  const messages: Anthropic.MessageParam[] = [
-    ...initialMessages,
-    { role: "user", content: userText },
-  ]
+  const history = toModelMessages(session)
+  const messages: ModelMessage[] = [...history, { role: "user", content: userText }]
 
   let accumulatedText = ""
-  let lastTokenCount = session.tokenCount ?? 0
-  let turns = 0
 
   try {
-    while (turns < MAX_TURNS) {
-      turns++
-
-      // ── Stream with retry on overloaded ──────────────────────────────────────
-      let response: Anthropic.Message | undefined
-      const textBeforeTurn = accumulatedText
-
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const stream = anthropic.messages.stream({
-            model: config.model,
-            max_tokens: 8096,
-            system: SYSTEM_BLOCKS,
-            tools: TOOLS_WITH_CACHE,
-            messages: markLastForCache(messages),
-          })
-
-          for await (const event of stream) {
-            if (
-              event.type === "content_block_delta" &&
-              event.delta.type === "text_delta"
-            ) {
-              accumulatedText += event.delta.text
-              callbacks.onToken(event.delta.text)
-            }
-          }
-
-          response = await stream.finalMessage()
-          break // success
-        } catch (err) {
-          if (attempt < MAX_RETRIES && isOverloadedError(err)) {
-            accumulatedText = textBeforeTurn
-            callbacks.onRetry?.(attempt + 1)
-            await sleep(RETRY_DELAY_MS * (attempt + 1))
-            continue
-          }
-          throw err
-        }
-      }
-
-      // Track token usage for compaction decisions
-      const cacheRead = (response!.usage as unknown as Record<string, number>).cache_read_input_tokens ?? 0
-      lastTokenCount =
-        response!.usage.input_tokens + cacheRead + response!.usage.output_tokens
-
-      messages.push({ role: "assistant", content: response!.content })
-
-      if (response!.stop_reason === "end_turn") break
-
-      if (response!.stop_reason === "tool_use") {
-        const toolUseBlocks = response!.content.filter(
-          (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-        )
-
-        const toolResults: Anthropic.ToolResultBlockParam[] = []
-
-        for (const tu of toolUseBlocks) {
-          callbacks.onToolStart?.(tu.id, tu.name, tu.input)
-          const { content, isError } = await dispatch(
-            tu.name,
-            tu.input as Record<string, unknown>
-          )
-          const resultText = typeof content === "string" ? content : "[rich content]"
-          callbacks.onToolEnd?.(tu.id, tu.name, resultText, isError)
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: content as Anthropic.ToolResultBlockParam["content"],
-            is_error: isError,
-          })
-        }
-
-        messages.push({ role: "user", content: toolResults })
-        continue
-      }
-
-      break
-    }
-
-    // ── Persist the exchange ──────────────────────────────────────────────────
-    session.messages.push({
-      role: "user",
-      content: userText,
-      timestamp: new Date().toISOString(),
+    const result = streamText({
+      model: getModel(config.model),
+      system: SYSTEM_PROMPT,
+      messages,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      tools: buildAiSdkTools(memory, session.id, callbacks.onImage) as any,
+      stopWhen: stepCountIs(MAX_STEPS),
     })
-    if (accumulatedText) {
-      session.messages.push({
-        role: "assistant",
-        content: accumulatedText,
-        timestamp: new Date().toISOString(),
-      })
+
+    for await (const chunk of result.fullStream) {
+      switch (chunk.type) {
+
+        case "text-delta":
+          accumulatedText += chunk.text
+          callbacks.onToken(chunk.text)
+          break
+
+        case "tool-call": {
+          // Cast to avoid complex union narrowing — fields are always present
+          const tc = chunk as unknown as { toolCallId: string; toolName: string; input: unknown }
+          callbacks.onToolStart?.(tc.toolCallId, tc.toolName, tc.input)
+          break
+        }
+
+        case "tool-result": {
+          const tr = chunk as unknown as { toolCallId: string; toolName: string; output: unknown }
+          const text = typeof tr.output === "string" ? tr.output : JSON.stringify(tr.output)
+          callbacks.onToolEnd?.(tr.toolCallId, tr.toolName, text, text.startsWith("Error:"))
+          break
+        }
+
+        case "tool-error": {
+          const te = chunk as unknown as { toolCallId: string; toolName: string; error: unknown }
+          const msg = te.error instanceof Error ? te.error.message : String(te.error)
+          callbacks.onToolEnd?.(te.toolCallId, te.toolName, msg, true)
+          break
+        }
+      }
     }
 
-    session.rawHistory = messages as Array<{ role: "user" | "assistant"; content: unknown }>
-    session.tokenCount = lastTokenCount
+    // ── Persist ───────────────────────────────────────────────────────────────
+    const { messages: responseMessages } = await result.response
 
-    // ── Proactive background compaction ──────────────────────────────────────
-    // Fire-and-forget: generates a summary in the background so the next
-    // compaction (when hard limit is hit) is instant.
-    if (shouldInitSummary(session) || shouldUpdateSummary(session)) {
-      triggerBackgroundSummary(session, anthropic, SYSTEM_BLOCKS)
+    session.messages.push({ role: "user", content: userText, timestamp: new Date().toISOString() })
+    if (accumulatedText) {
+      session.messages.push({ role: "assistant", content: accumulatedText, timestamp: new Date().toISOString() })
+    }
+    session.rawHistory = [...messages, ...responseMessages] as Session["rawHistory"]
+
+    // Track token count (Anthropic returns accurate values; other providers may return 0)
+    const usage = await result.usage
+    session.tokenCount = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+
+    // ── Background compaction (Anthropic only) ────────────────────────────────
+    if (anthropic && isAnthropicModel(config.model)) {
+      if (shouldInitSummary(session) || shouldUpdateSummary(session)) {
+        triggerBackgroundSummary(session, anthropic, SYSTEM_BLOCKS)
+      }
     }
 
     callbacks.onDone?.()
   } catch (err: unknown) {
-    callbacks.onError?.(new Error(extractErrorMessage(err)))
+    callbacks.onError?.(new Error(err instanceof Error ? err.message : String(err)))
   }
 }

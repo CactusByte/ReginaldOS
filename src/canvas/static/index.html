@@ -581,6 +581,7 @@
   function updateInputState() {
     inputEl.disabled = !connected || thinking
     sendEl.disabled  = !connected || thinking
+    if (!inputEl.disabled) inputEl.focus()
   }
 
   function setConnected(on) {
@@ -717,6 +718,7 @@
     setThinking(true)
     showTyping()
     ws.send(JSON.stringify({ type: "chat", sessionId, text }))
+    inputEl.focus()
   }
 
   inputEl.addEventListener("input", () => {

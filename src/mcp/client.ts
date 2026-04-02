@@ -53,11 +53,20 @@ export async function connectMcpServers(servers: McpServerConfig[]): Promise<voi
       // e.g. filesystem's "read_file" becomes "filesystem__read_file"
       const prefix = label.replace(/[^a-zA-Z0-9]/g, "_") + "__"
 
-      const toolDefs: Anthropic.Tool[] = tools.map((tool) => ({
-        name: prefix + tool.name,
-        description: tool.description ?? "",
-        input_schema: tool.inputSchema as Anthropic.Tool["input_schema"],
-      }))
+      const toolDefs: Anthropic.Tool[] = tools.map((tool) => {
+        // Some MCP servers (Python-based) return type: null — normalize to "object"
+        const schema = tool.inputSchema as Record<string, unknown>
+        const input_schema: Anthropic.Tool["input_schema"] = {
+          type: "object",
+          properties: (schema.properties as Anthropic.Tool["input_schema"]["properties"]) ?? {},
+          ...(schema.required ? { required: schema.required as string[] } : {}),
+        }
+        return {
+          name: prefix + tool.name,
+          description: tool.description ?? "",
+          input_schema,
+        }
+      })
 
       // Dispatch lookup uses the prefixed names; strip prefix before calling the server
       const ownedNames = new Set(toolDefs.map((t) => t.name))

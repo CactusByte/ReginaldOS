@@ -12,10 +12,13 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.64",
+    "@ai-sdk/openai": "^3.0.49",
     "@anthropic-ai/sdk": "^0.51.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@pump-fun/pump-sdk": "^1.32.0",
     "@slack/bolt": "^4.6.0",
+    "ai": "^6.0.142",
     "astro": "^5.0.0",
     "better-sqlite3": "^11.0.0",
     "bn.js": "^5.2.3",

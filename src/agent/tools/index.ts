@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk"
+import { jsonSchema } from "ai"
 import type { MemoryStore } from "../../memory/store.js"
 import { join } from "node:path"
 import { config } from "../../config.js"
@@ -12,6 +13,7 @@ import { tavilySearch, tavilyExtract } from "./tavily.js"
 import { pumpfun } from "./pumpfun.js"
 import { rugcheck } from "./rugcheck.js"
 import { imageGenerate } from "./imageGenerate.js"
+import { xGetUser, xGetUserTweets, xFollowUser } from "./x.js"
 
 // Extra dispatchers registered at startup (cron, skill_read, etc.)
 type ExtraDispatcher = (
@@ -227,6 +229,67 @@ export const CORE_TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "x_get_user",
+    description:
+      "Look up an X (Twitter) user by username. Returns profile info including ID, name, bio, follower counts, and more.",
+    input_schema: {
+      type: "object",
+      properties: {
+        username: { type: "string", description: "X username without the @ symbol" },
+        user_fields: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional list of extra fields to include (e.g. location, url, verified)",
+        },
+      },
+      required: ["username"],
+    },
+  },
+  {
+    name: "x_follow_user",
+    description:
+      "Follow an X (Twitter) user on behalf of the authenticated account. Requires X_OAUTH2_USER_TOKEN and X_USER_ID in env. Always confirm with the user before following.",
+    input_schema: {
+      type: "object",
+      properties: {
+        source_user_id: {
+          type: "string",
+          description: "Numeric ID of the authenticated user doing the following. Use X_USER_ID from env or x_get_user to look it up.",
+        },
+        target_user_id: {
+          type: "string",
+          description: "Numeric ID of the user to follow.",
+        },
+      },
+      required: ["source_user_id", "target_user_id"],
+    },
+  },
+  {
+    name: "x_get_user_tweets",
+    description:
+      "Retrieve recent posts from an X (Twitter) user by their numeric user ID. Use x_get_user first to look up the ID from a username.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Numeric X user ID (e.g. '2244994945')" },
+        max_results: { type: "number", description: "Number of tweets to return (5–100, default 10)" },
+        exclude: {
+          type: "array",
+          items: { type: "string", enum: ["replies", "retweets"] },
+          description: "Types of tweets to exclude",
+        },
+        since_id: { type: "string", description: "Only return tweets newer than this tweet ID" },
+        until_id: { type: "string", description: "Only return tweets older than this tweet ID" },
+        tweet_fields: {
+          type: "array",
+          items: { type: "string" },
+          description: "Extra tweet fields to include (e.g. public_metrics, created_at)",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "project_info",
     description:
       "Returns the Astro project directory paths for this session. Call this before writing any website files to know exactly where to put them.",
@@ -314,6 +377,45 @@ export function getAllToolDefinitions(): Anthropic.Tool[] {
   return [...CORE_TOOL_DEFINITIONS, ...extraToolDefs]
 }
 
+/**
+ * Build tools in Vercel AI SDK format, with execute functions wired to the
+ * existing dispatcher. Used by loop.ts when running with any provider.
+ */
+export function buildAiSdkTools(
+  memory: MemoryStore,
+  sessionId: string,
+  onImage?: (path: string) => void
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Record<string, any> {
+  const dispatch = createDispatcher(memory, sessionId, onImage)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: Record<string, any> = {}
+
+  for (const def of getAllToolDefinitions()) {
+    const name = def.name
+    const rawSchema = def.input_schema as Record<string, unknown>
+    // Ensure type is always "object" — MCP servers (especially Python-based) may send type: null
+    if (rawSchema.type !== "object") {
+      rawSchema.type = "object"
+    }
+    tools[name] = {
+      description: def.description ?? "",
+      // AI SDK v6 reads tool.inputSchema internally (not tool.parameters).
+      // Passing a Schema object (from jsonSchema()) ensures asSchema() detects
+      // it as a Schema via Symbol and uses .jsonSchema directly.
+      inputSchema: jsonSchema(rawSchema),
+      execute: async (input: Record<string, unknown>) => {
+        const { content, isError } = await dispatch(name, input)
+        // Return rich content as text; keep Error: prefix so callers can detect failures
+        if (typeof content !== "string") return JSON.stringify(content)
+        return isError ? `Error: ${content}` : content
+      },
+    }
+  }
+
+  return tools
+}
+
 // Keep TOOL_DEFINITIONS as an alias for backwards compat within this file
 const TOOL_DEFINITIONS = CORE_TOOL_DEFINITIONS
 
@@ -379,6 +481,18 @@ export function createDispatcher(memory: MemoryStore, sessionId: string, onImage
         }
         case "pumpfun": {
           const result = await pumpfun(input as Parameters<typeof pumpfun>[0])
+          return { content: result, isError: result.startsWith("Error:") }
+        }
+        case "x_follow_user": {
+          const result = await xFollowUser(input as Parameters<typeof xFollowUser>[0])
+          return { content: result, isError: result.startsWith("Error:") }
+        }
+        case "x_get_user": {
+          const result = await xGetUser(input as Parameters<typeof xGetUser>[0])
+          return { content: result, isError: result.startsWith("Error:") }
+        }
+        case "x_get_user_tweets": {
+          const result = await xGetUserTweets(input as Parameters<typeof xGetUserTweets>[0])
           return { content: result, isError: result.startsWith("Error:") }
         }
         case "project_info": {

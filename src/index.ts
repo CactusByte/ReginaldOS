@@ -14,11 +14,23 @@ import { createCronDispatcher } from "./agent/tools/cron.js"
 import { createSkillReadDispatcher } from "./agent/tools/skillRead.js"
 import { initLoop } from "./agent/loop.js"
 import { connectMcpServers } from "./mcp/client.js"
+import { isAnthropicModel } from "./agent/provider.js"
 import type { McpServerConfig } from "./mcp/client.js"
 import { join } from "node:path"
 
 async function main(): Promise<void> {
   console.log("ReginaldOS starting…")
+
+  // ── Validate provider config ───────────────────────────────────────────────
+  if (isAnthropicModel(config.model) && !config.anthropicApiKey) {
+    console.error(
+      `\nError: MODEL is set to "${config.model}" (Anthropic) but ANTHROPIC_API_KEY is missing.\n` +
+      `  → Set ANTHROPIC_API_KEY in your .env, or switch to a different provider:\n` +
+      `     MODEL=openai/gpt-4o   (+ OPENAI_CHAT_API_KEY)\n` +
+      `     MODEL=ollama/llama3.2 (Ollama running locally)\n`
+    )
+    process.exit(1)
+  }
 
   const memory   = new MemoryStore(join(config.dataDir, "memory.db"))
   const sessions = new SessionManager(join(config.dataDir, "sessions"))
