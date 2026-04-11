@@ -1,3 +1,4 @@
+<img width="1920" height="1080" alt="Reginald OS" src="https://github.com/user-attachments/assets/ebf30fcd-371a-4b72-8f13-21caf32e7266" />
 # ReginaldOS
 
 Personal AI assistant daemon. Runs on your own hardware, accessible through a browser Canvas interface, Telegram, and iMessage. Powered by Claude.
